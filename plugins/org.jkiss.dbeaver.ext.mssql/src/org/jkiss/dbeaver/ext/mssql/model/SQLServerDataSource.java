@@ -67,6 +67,7 @@ public class SQLServerDataSource extends JDBCDataSource implements DBSInstanceCo
     private volatile transient boolean hasStatistics;
     private boolean isBabelfish;
     private boolean isSynapseDatabase;
+    private Boolean supportsExternalTables;
 
     public SQLServerDataSource(DBRProgressMonitor monitor, DBPDataSourceContainer container)
         throws DBException
@@ -75,19 +76,41 @@ public class SQLServerDataSource extends JDBCDataSource implements DBSInstanceCo
         isBabelfish = SQLServerUtils.isDriverBabelfish(getContainer().getDriver());
     }
 
-    public boolean supportsColumnProperty() {
+    boolean supportsColumnProperty() {
         return supportsColumnProperty;
     }
 
-    public boolean supportsExternalTables() {
-        final DBPDriver driver = getContainer().getDriver();
-        if (isBabelfish) {
-            return false;
+    boolean supportsExternalTables(@NotNull JDBCSession session) {
+        if (supportsExternalTables == null) {
+            if (isBabelfish) {
+                return supportsExternalTables = false;
+            }
+            final DBPDriver driver = getContainer().getDriver();
+            if (SQLServerUtils.isDriverAzure(driver)) {
+                return supportsExternalTables = true;
+            }
+            if (SQLServerUtils.isDriverSqlServer(driver)) {
+                if (isServerVersionAtLeast(SQLServerConstants.SQL_SERVER_2008_VERSION_MAJOR, 0)) {
+                    // The "is_external" column can be used to identify external tables support.
+                    // But not all SQL Server versions supports this column in the all_columns view
+                    // Sometimes checking the version does not work for some reason - see #15036
+                    // Let's check the existence of column directly at the database
+                    try {
+                        String resultSet = JDBCUtils.queryString(session, "SELECT 1 FROM sys.all_columns ac\n" +
+                            "LEFT JOIN sys.all_objects ao ON ao.object_id = ac.object_id\n" +
+                            "LEFT JOIN sys.schemas s ON s.schema_id = ao.schema_id\n" +
+                            "WHERE s.name = 'sys'\n" +
+                            "AND ao.name = 'tables'\n" +
+                            "AND ac.name = 'is_external'");
+                        return supportsExternalTables = resultSet != null;
+                    } catch (SQLException e) {
+                        log.debug("Error reading system information from the sys schema", e);
+                    }
+                }
+            }
+            supportsExternalTables = false;
         }
-        if (SQLServerUtils.isDriverSqlServer(driver) && isServerVersionAtLeast(SQLServerConstants.SQL_SERVER_2016_VERSION_MAJOR, 0)) {
-            return true;
-        }
-        return SQLServerUtils.isDriverAzure(driver);
+        return supportsExternalTables;
     }
 
     @Override
